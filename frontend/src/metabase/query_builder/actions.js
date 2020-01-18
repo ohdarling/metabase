@@ -454,14 +454,7 @@ export const initializeQB = (location, params) => {
       if (databaseFetch) {
         await databaseFetch;
       }
-      const { tables } = getMetadata(getState());
-      const tableId = getIn(card, ["dataset_query", "query", "source-table"]);
-      // Only fetch the table metadata if the table was returned in the earlier
-      // call to fetch databases and tables. Otherwise, this user doesn't have
-      // permissions and the call will fail.
-      if (tables[tableId] != null) {
-        await dispatch(loadMetadataForCard(card));
-      }
+      await dispatch(loadMetadataForCard(card));
     }
 
     let question = card && new Question(card, getMetadata(getState()));
@@ -554,26 +547,23 @@ export const loadMetadataForCard = createThunkAction(
       if (!card || !card.dataset_query) {
         return;
       }
-      const query = new Question(card, getMetadata(getState())).query();
-      if (query instanceof StructuredQuery) {
-        try {
-          const rootTableId = query.rootTableId();
-          if (rootTableId != null) {
-            await Promise.all([
-              dispatch(Tables.actions.fetchTableMetadata({ id: rootTableId })),
-              dispatch(Tables.actions.fetchForeignKeys({ id: rootTableId })),
-            ]);
-          }
-          await Promise.all(
-            query
-              .dependentTableIds()
-              .map(id => dispatch(Tables.actions.fetchMetadata({ id }))),
-          );
-        } catch (e) {
-          console.error("Error loading metadata for card", e);
-          throw e;
-        }
-      }
+      const loadedIds = [];
+      let newIds;
+      // NOTE: need to do this in a loop so that implicitly linked (i.e. fk->) tables are loaded
+      // we don't know about them until the initial table is loaded
+      do {
+        const metadata = getMetadata(getState());
+        const query = new Question(card, metadata).query();
+        newIds = _.difference(query.dependentTableIds(), loadedIds);
+        await Promise.all(
+          newIds
+            // don't try to load tables we don't have access to
+            // this assumes the list of tables has been loaded
+            .filter(id => metadata.table(id))
+            .map(id => dispatch(Tables.actions.fetchMetadata({ id }))),
+        );
+        loadedIds.push(...newIds);
+      } while (newIds.length > 0);
     };
   },
 );
